@@ -335,4 +335,71 @@
   (map-get? voting-strategies { owner: owner, strategy-id: strategy-id })
 )
 
+;; Advanced autonomous voting execution with strategy-based decision making
+;; This function allows delegates or strategy executors to vote on behalf of users
+;; based on their predefined voting strategies, enabling truly autonomous governance
+(define-public (execute-autonomous-vote 
+    (proposal-id uint) 
+    (strategy-owner principal) 
+    (strategy-id uint))
+  (let
+    (
+      (strategy (unwrap! (map-get? voting-strategies 
+        { owner: strategy-owner, strategy-id: strategy-id }) err-invalid-strategy))
+      (proposal (unwrap! (map-get? proposals proposal-id) err-not-found))
+      (voter-power (get-effective-voting-power strategy-owner))
+      (existing-vote (map-get? votes { proposal-id: proposal-id, voter: strategy-owner }))
+      (current-votes (+ (get votes-for proposal) (get votes-against proposal)))
+      (quorum-percentage (if (> (get quorum-required proposal) u0)
+        (/ (* current-votes u100) (get quorum-required proposal))
+        u0))
+    )
+    ;; Validate strategy is active and auto-vote is enabled
+    (asserts! (get active strategy) err-invalid-strategy)
+    (asserts! (get auto-vote strategy) err-unauthorized)
+    (asserts! (is-proposal-active proposal-id) err-proposal-closed)
+    (asserts! (is-none existing-vote) err-already-voted)
+    (asserts! (> voter-power u0) err-insufficient-votes)
+    
+    ;; Check if current quorum meets strategy threshold
+    (asserts! (>= quorum-percentage (get min-quorum-threshold strategy)) err-quorum-not-met)
+    
+    ;; Execute vote based on strategy preference
+    (let
+      (
+        (vote-choice (get vote-preference strategy))
+      )
+      ;; Record the autonomous vote
+      (map-set votes
+        { proposal-id: proposal-id, voter: strategy-owner }
+        {
+          vote-weight: voter-power,
+          vote-choice: vote-choice,
+          voted-at: block-height
+        }
+      )
+      
+      ;; Update proposal vote counts
+      (map-set proposals proposal-id
+        (merge proposal
+          (if vote-choice
+            { votes-for: (+ (get votes-for proposal) voter-power), votes-against: (get votes-against proposal) }
+            { votes-for: (get votes-for proposal), votes-against: (+ (get votes-against proposal) voter-power) }
+          )
+        )
+      )
+      
+      ;; Update proposal status
+      (update-proposal-status proposal-id)
+      
+      (ok { 
+        voted: true, 
+        choice: vote-choice, 
+        weight: voter-power,
+        strategy-used: strategy-id 
+      })
+    )
+  )
+)
+
 
